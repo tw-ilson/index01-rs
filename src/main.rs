@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use btleplug::api::Central as _;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use index01::client::{self, Index01Client};
 use index01::collection::parse_collection;
@@ -478,16 +479,57 @@ async fn watch(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let addr = btleplug::api::BDAddr::from_str_delim(address)
         .map_err(|_| format!("invalid address {address:?}"))?;
-    let adapter = client::default_adapter().await?;
     // With --keep, collections stay on the ring; only pull ones newer than what we've seen.
     let mut seen_end: u16 = 0;
+    let mut failures: u32 = 0;
     println!("watching {address}; press the ring button to record");
     loop {
-        // Wait for stored collections, and for the ring to finish recording.
-        let adv = client::wait_for_advert(&adapter, addr, |a| {
-            !a.in_collection_state && (a.collection_count as u16) > if keep { seen_end } else { 0 }
-        })
-        .await?;
+        // Wait for stored collections, and for the ring to finish recording. The adapter is
+        // looked up afresh each time: after suspend it can re-enumerate (hci1 -> hci0), stop
+        // discovering without telling anyone, or refuse new scans until it is power-cycled.
+        let adapter = match client::default_adapter().await {
+            Ok(a) => a,
+            Err(e) => {
+                failures += 1;
+                eprintln!("bluetooth adapter unavailable: {e}; retrying");
+                tokio::time::sleep(backoff(failures)).await;
+                continue;
+            }
+        };
+        let threshold = if keep { seen_end } else { 0 };
+        let wait = client::wait_for_advert(&adapter, addr, |a| {
+            !a.in_collection_state && (a.collection_count as u16) > threshold
+        });
+        let adv = tokio::select! {
+            r = wait => r,
+            () = resumed_from_suspend() => {
+                println!("resumed from suspend; restarting the scan");
+                let _ = adapter.stop_scan().await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
+        let adv = match adv {
+            Ok(a) => {
+                failures = 0;
+                a
+            }
+            Err(e) => {
+                failures += 1;
+                let _ = adapter.stop_scan().await;
+                eprintln!("scan failed: {e}");
+                // A controller stuck after resume answers every scan with "Operation already
+                // in progress"; only a power cycle clears it.
+                if failures >= 2 {
+                    match power_cycle(&adapter).await {
+                        Ok(name) => println!("power-cycled {name}"),
+                        Err(e) => eprintln!("could not power-cycle the adapter: {e}"),
+                    }
+                }
+                tokio::time::sleep(backoff(failures)).await;
+                continue;
+            }
+        };
         println!("ring reports {} stored collection(s)", adv.collection_count);
         let batch = out.join(now_s().to_string());
         std::fs::create_dir_all(&batch)?;
@@ -562,6 +604,46 @@ async fn watch(
             }
         }
     }
+}
+
+fn backoff(failures: u32) -> Duration {
+    Duration::from_secs((2u64 << failures.min(4)).min(30))
+}
+
+/// Completes when the machine has been suspended: the wall clock advances while the
+/// monotonic clock (CLOCK_MONOTONIC, which tokio and Instant use) is stopped.
+async fn resumed_from_suspend() {
+    loop {
+        let (mono, wall) = (std::time::Instant::now(), std::time::SystemTime::now());
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        let dm = mono.elapsed();
+        let dw = wall.elapsed().unwrap_or(dm);
+        if dw > dm + Duration::from_secs(10) {
+            return;
+        }
+    }
+}
+
+/// Power the adapter off and on through BlueZ. Returns its name (e.g. "hci0").
+async fn power_cycle(adapter: &btleplug::platform::Adapter) -> Result<String, Box<dyn std::error::Error>> {
+
+    let info = adapter.adapter_info().await?;
+    let name = info.split_whitespace().next().unwrap_or("hci0").to_owned();
+    if !name.starts_with("hci") {
+        return Err(format!("unexpected adapter name {info:?}").into());
+    }
+    let path = format!("/org/bluez/{name}");
+    for on in ["false", "true"] {
+        let st = tokio::process::Command::new("busctl")
+            .args(["set-property", "org.bluez", &path, "org.bluez.Adapter1", "Powered", "b", on])
+            .status()
+            .await?;
+        if !st.success() {
+            return Err(format!("busctl set-property Powered {on} failed").into());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Ok(name)
 }
 
 #[tokio::main]
