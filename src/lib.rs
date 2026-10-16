@@ -15,8 +15,6 @@
 pub mod haversine;
 
 pub mod client;
-#[cfg(all(feature = "local", target_os = "linux", target_env = "gnu"))]
-mod glibc_compat;
 pub mod paste;
 pub mod telesto;
 pub mod transcribe;
