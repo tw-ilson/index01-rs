@@ -120,23 +120,24 @@ enum Cmd {
     },
     /// Wait for new recordings, then pull, erase, set the clock and transcribe them. Runs forever.
     Watch {
+        #[arg(env = "INDEX01_ADDRESS")]
         address: String,
         /// Each batch goes to <out>/<unix time>/ (recording_N.wav, .txt and the raw .bin parts).
-        #[arg(long, default_value = "recordings")]
+        #[arg(long, default_value = "recordings", env = "INDEX01_OUT")]
         out: PathBuf,
         /// Run this shell command per transcript: text on stdin, INDEX01_TEXT / INDEX01_WAV /
         /// INDEX01_TXT in the environment. E.g. 'wl-copy' or 'cat >> ~/notes.md'.
-        #[arg(long)]
+        #[arg(long, env = "INDEX01_EXEC")]
         exec: Option<String>,
         /// Paste each transcript into the focused window (clipboard + a virtual keypress
         /// via /dev/uinput; works on Wayland including GNOME).
-        #[arg(long)]
+        #[arg(long, env = "INDEX01_PASTE")]
         paste: bool,
         /// Paste shortcut; terminals usually need ctrl-shift-v.
-        #[arg(long, default_value = "ctrl-v")]
+        #[arg(long, default_value = "ctrl-v", env = "INDEX01_PASTE_KEYS")]
         paste_keys: String,
         /// Leave recordings on the ring (default: erase after a complete pull).
-        #[arg(long)]
+        #[arg(long, env = "INDEX01_KEEP")]
         keep: bool,
         #[command(flatten)]
         stt: BackendArgs,

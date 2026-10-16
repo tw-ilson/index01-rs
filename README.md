@@ -60,6 +60,8 @@ Choose a speech model with `--backend`:
 
 Audio is resampled from about 10 kHz to 16 kHz before transcription.
 
+Every `watch` option can also come from the environment (`INDEX01_ADDRESS`, `INDEX01_OUT`, `INDEX01_PASTE`, `INDEX01_PASTE_KEYS`, `INDEX01_EXEC`, `INDEX01_KEEP`, `INDEX01_BACKEND`, `INDEX01_MODEL_DIR`, ...), so it can run as a systemd user service with an `EnvironmentFile`. [index01-tray](https://github.com/tw-ilson/index01-tray) sets that up and adds a tray icon.
+
 ## Provenance and tests
 
 This is a clean-room-style port. The protocol, the collection format, the audio codec and the user-record format were recovered by reverse-engineering the vendor's Android library and the ring firmware. Functions in `src/haversine/` cite the library function or address they replicate.
