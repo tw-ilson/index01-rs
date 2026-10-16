@@ -1,0 +1,35 @@
+name: ci
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev espeak-ng
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked
+      - name: Binary requirements
+        run: |
+          ldd target/release/index01
+          objdump -T target/release/index01 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      # End-to-end ONNX Runtime check: transcribe synthetic speech with Parakeet (Handy's download).
+      - uses: actions/cache@v4
+        id: model
+        with:
+          path: models
+          key: parakeet-tdt-0.6b-v3-int8
+      - if: steps.model.outputs.cache-hit != 'true'
+        run: mkdir -p models && curl -sSfL https://blob.handy.computer/parakeet-v3-int8.tar.gz | tar xz -C models
+      - name: Transcribe
+        run: |
+          espeak-ng -s 140 -w hello.wav "hello world, this is a test of the ring"
+          target/release/index01 transcribe --model-dir models/parakeet-tdt-0.6b-v3-int8 hello.wav
+          cat hello.txt
+          grep -qi "hello" hello.txt
