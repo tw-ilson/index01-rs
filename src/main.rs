@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use index01::client::{self, Index01Client};
 use index01::collection::parse_collection;
 use index01::protocol as p;
+use index01::transcribe::Backend;
 use index01::wav::write_wav;
 
 #[derive(Parser)]
@@ -22,6 +23,70 @@ struct Cli {
     scan_timeout: u64,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BackendKind {
+    /// In-process ONNX model (Parakeet, Canary, Cohere, SenseVoice, GigaAM); see --model-dir.
+    #[cfg(feature = "local")]
+    Local,
+    /// OpenAI-compatible POST {url}/audio/transcriptions (vLLM, whisper.cpp server, speaches, ...).
+    Openai,
+    /// Shell command given the 16 kHz WAV path as "$1"; prints the transcript on stdout.
+    Command,
+}
+
+/// Speech-to-text backend. Any model works: point it at a server or a script.
+#[derive(Args, Clone)]
+struct BackendArgs {
+    #[cfg_attr(feature = "local", arg(long, value_enum, default_value = "local", env = "INDEX01_BACKEND"))]
+    #[cfg_attr(not(feature = "local"), arg(long, value_enum, default_value = "openai", env = "INDEX01_BACKEND"))]
+    backend: BackendKind,
+    /// For --backend local: a model directory, or reuse other apps' downloads: "auto" (Handy,
+    /// then Spokenly; prefers Parakeet v2), "handy", "spokenly", or "handy/<model-folder>".
+    #[arg(long, default_value = "auto", env = "INDEX01_MODEL_DIR")]
+    model_dir: String,
+    /// Base URL of the OpenAI-compatible server.
+    #[arg(long, default_value = "http://localhost:8000/v1", env = "INDEX01_URL")]
+    url: String,
+    /// Model name sent to the server.
+    #[arg(long, default_value = "openai/whisper-large-v3-turbo", env = "INDEX01_MODEL")]
+    model: String,
+    /// Bearer token for the server, if it needs one.
+    #[arg(long, env = "INDEX01_API_KEY", hide_env_values = true)]
+    api_key: Option<String>,
+    /// Language hint (ISO 639-1, e.g. "en").
+    #[arg(long, env = "INDEX01_LANGUAGE")]
+    language: Option<String>,
+    /// Prompt / vocabulary hint passed to the model.
+    #[arg(long, env = "INDEX01_PROMPT")]
+    prompt: Option<String>,
+    /// Command for --backend command, e.g. "python parakeet.py".
+    #[arg(long, env = "INDEX01_COMMAND")]
+    command: Option<String>,
+}
+
+impl BackendArgs {
+    fn backend(&self) -> Result<Backend, Box<dyn std::error::Error>> {
+        Ok(match self.backend {
+            #[cfg(feature = "local")]
+            BackendKind::Local => {
+                let m = index01::transcribe::local::LocalModel::load(&self.model_dir, self.language.clone())?;
+                eprintln!("model: {:?} from {}", m.engine, m.dir.display());
+                Backend::Local(std::sync::Arc::new(std::sync::Mutex::new(m)))
+            }
+            BackendKind::Openai => Backend::OpenAi {
+                url: self.url.clone(),
+                model: self.model.clone(),
+                api_key: self.api_key.clone(),
+                language: self.language.clone(),
+                prompt: self.prompt.clone(),
+            },
+            BackendKind::Command => Backend::Command(
+                self.command.clone().ok_or("--backend command needs --command")?,
+            ),
+        })
+    }
 }
 
 #[derive(Subcommand)]
@@ -45,6 +110,36 @@ enum Cmd {
     Decode {
         #[arg(default_value = "collections")]
         dir: PathBuf,
+    },
+    /// Transcribe WAV files (16-bit mono, any rate) and write <name>.txt next to each.
+    Transcribe {
+        #[arg(required = true)]
+        wavs: Vec<PathBuf>,
+        #[command(flatten)]
+        stt: BackendArgs,
+    },
+    /// Wait for new recordings, then pull, erase, set the clock and transcribe them. Runs forever.
+    Watch {
+        address: String,
+        /// Each batch goes to <out>/<unix time>/ (recording_N.wav, .txt and the raw .bin parts).
+        #[arg(long, default_value = "recordings")]
+        out: PathBuf,
+        /// Run this shell command per transcript: text on stdin, INDEX01_TEXT / INDEX01_WAV /
+        /// INDEX01_TXT in the environment. E.g. 'wl-copy' or 'cat >> ~/notes.md'.
+        #[arg(long)]
+        exec: Option<String>,
+        /// Paste each transcript into the focused window (clipboard + a virtual keypress
+        /// via /dev/uinput; works on Wayland including GNOME).
+        #[arg(long)]
+        paste: bool,
+        /// Paste shortcut; terminals usually need ctrl-shift-v.
+        #[arg(long, default_value = "ctrl-v")]
+        paste_keys: String,
+        /// Leave recordings on the ring (default: erase after a complete pull).
+        #[arg(long)]
+        keep: bool,
+        #[command(flatten)]
+        stt: BackendArgs,
     },
     /// Write the user record and set the ring clock (what the app does on first setup).
     /// Refuses if a user record is already programmed, unless --force.
@@ -188,6 +283,25 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pieces.sort_by_key(|(i, _)| *i);
             write_recordings(&pieces, &dir)?;
         }
+        Cmd::Transcribe { wavs, stt } => {
+            let backend = stt.backend()?;
+            for wav in wavs {
+                let text = backend.transcribe_wav(&wav).await?;
+                std::fs::write(wav.with_extension("txt"), format!("{text}\n"))?;
+                println!("{}: {text}", wav.display());
+            }
+        }
+        Cmd::Watch { address, out, exec, paste, paste_keys, keep, stt } => {
+            let paster = if paste {
+                Some(index01::paste::Paster::new(index01::paste::parse_keys(&paste_keys)?).map_err(
+                    |e| format!("--paste: can't open /dev/uinput ({e}); see README for permissions"),
+                )?)
+            } else {
+                None
+            };
+            watch(&address, &out, exec.as_deref(), paster.as_ref(), keep, &stt.backend()?, scan_timeout)
+                .await?;
+        }
         Cmd::Setup { address, user_id, yes, force } => {
             if !yes {
                 return Err("refusing to write the user record without --yes".into());
@@ -256,7 +370,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 async fn pull(
     c: &mut Index01Client,
     out: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let idx = c.read_stored_collection_indexes().await?;
     println!(
         "stored collection index range: {} .. {}",
@@ -285,7 +399,7 @@ async fn pull(
 fn write_recordings(
     pieces: &[(u16, Vec<u8>)],
     out: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     struct Rec {
         first: u16,
         rate: u32,
@@ -333,6 +447,7 @@ fn write_recordings(
         r.complete = !a.is_multipart || a.is_final;
         open = a.is_multipart && !a.is_final;
     }
+    let mut paths = Vec::new();
     for r in &recs {
         let wav = out.join(format!("recording_{}.wav", r.first));
         write_wav(&r.samples, r.rate, &wav)?;
@@ -346,8 +461,106 @@ fn write_recordings(
             r.buttons.join(" "),
             if r.complete { "" } else { ", INCOMPLETE: final part missing" }
         );
+        paths.push(wav);
     }
-    Ok(())
+    Ok(paths)
+}
+
+async fn watch(
+    address: &str,
+    out: &std::path::Path,
+    exec: Option<&str>,
+    paster: Option<&index01::paste::Paster>,
+    keep: bool,
+    backend: &Backend,
+    scan_timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = btleplug::api::BDAddr::from_str_delim(address)
+        .map_err(|_| format!("invalid address {address:?}"))?;
+    let adapter = client::default_adapter().await?;
+    // With --keep, collections stay on the ring; only pull ones newer than what we've seen.
+    let mut seen_end: u16 = 0;
+    println!("watching {address}; press the ring button to record");
+    loop {
+        // Wait for stored collections, and for the ring to finish recording.
+        let adv = client::wait_for_advert(&adapter, addr, |a| {
+            !a.in_collection_state && (a.collection_count as u16) > if keep { seen_end } else { 0 }
+        })
+        .await?;
+        println!("ring reports {} stored collection(s)", adv.collection_count);
+        let batch = out.join(now_s().to_string());
+        std::fs::create_dir_all(&batch)?;
+        let res: Result<Vec<PathBuf>, Box<dyn std::error::Error>> = async {
+            let mut c = Index01Client::connect_address(address, scan_timeout).await?;
+            let r = async {
+                let idx = c.read_stored_collection_indexes().await?;
+                let mut pieces = Vec::new();
+                for i in idx.iter().filter(|&i| !keep || i >= seen_end) {
+                    let blob = c.read_collection(i).await?;
+                    std::fs::write(batch.join(format!("collection_{i}.bin")), &blob)?;
+                    pieces.push((i, blob));
+                }
+                // Only erase when every stored collection was saved.
+                if !keep && pieces.len() == idx.iter().count() {
+                    c.erase_stored_collection_indexes(true).await?;
+                }
+                c.set_time(now_s()).await?;
+                seen_end = idx.range_end;
+                Ok::<_, Box<dyn std::error::Error>>(pieces)
+            }
+            .await;
+            let _ = c.disconnect().await;
+            // Let BlueZ finish tearing the link down before the next scan/connect.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            write_recordings(&r?, &batch)
+        }
+        .await;
+        let wavs = match res {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("pull failed: {e}; retrying on the next advertisement");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+        for wav in wavs {
+            let text = match backend.transcribe_wav(&wav).await {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("transcription failed for {}: {e} (audio kept)", wav.display());
+                    continue;
+                }
+            };
+            let txt = wav.with_extension("txt");
+            std::fs::write(&txt, format!("{text}\n"))?;
+            println!(">> {text}");
+            if let Some(p) = paster {
+                if !text.is_empty() {
+                    if let Err(e) = p.paste(&text).await {
+                        eprintln!("paste failed: {e}");
+                    }
+                }
+            }
+            if let Some(cmd) = exec {
+                use tokio::io::AsyncWriteExt;
+                let mut child = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .env("INDEX01_TEXT", &text)
+                    .env("INDEX01_WAV", &wav)
+                    .env("INDEX01_TXT", &txt)
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(text.as_bytes()).await?;
+                }
+                let st = child.wait().await?;
+                if !st.success() {
+                    eprintln!("--exec exited with {st}");
+                }
+            }
+        }
+    }
 }
 
 #[tokio::main]

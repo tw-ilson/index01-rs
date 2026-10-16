@@ -15,13 +15,22 @@ path = "src/main.rs"
 
 [dependencies]
 btleplug = "0.13.5"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 futures = "0.3"
+libc = "0.2.190"
+reqwest = { version = "0.13.3", default-features = false, features = ["multipart", "json", "rustls"] }
+serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "fs", "process", "io-util", "signal"] }
+transcribe-rs = { version = "0.3.12", features = ["onnx"], optional = true }
 uuid = "1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 tokio = { version = "1", features = ["test-util"] }
+
+[features]
+default = ["local"]
+# In-process ONNX speech models (Parakeet, Canary, Cohere, SenseVoice, GigaAM) via transcribe-rs,
+# the engine behind the Handy app. Reuses models Handy/Spokenly already downloaded.
+local = ["dep:transcribe-rs"]

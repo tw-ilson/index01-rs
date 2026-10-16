@@ -9,12 +9,15 @@
 //! - [`telesto`]: the one-op-at-a-time request runner, generic over a [`telesto::Link`].
 //! - [`client`]: the btleplug/BlueZ implementation of that link plus high-level reads.
 //! - [`wav`]: WAV output with the phone app's DC-bias removal.
+//! - [`transcribe`]: pluggable speech-to-text backends (OpenAI-compatible server or command).
 //! - the `index01` CLI (`src/main.rs`).
 
 pub mod haversine;
 
 pub mod client;
 pub mod telesto;
+pub mod paste;
+pub mod transcribe;
 pub mod wav;
 
 pub use haversine::{appdata, collection, protocol};

@@ -43,6 +43,23 @@ index01 erase <addr> --yes --out recordings  # delete stored collections; refuse
 
 To record, press the button and speak; the ring flashes twice when it's done. A recording is split across several collections of about 4 KB each. `pull` and `decode` join them into one WAV per recording.
 
+## Transcription
+
+```sh
+index01 watch <addr> --paste            # wait for recordings; pull, erase, transcribe, paste into the focused window
+index01 transcribe recordings/*.wav     # transcribe saved WAVs; writes .txt alongside
+```
+
+`watch` waits for the ring to advertise stored recordings. It then pulls them into `--out/<unix time>/`, erases the ring, sets its clock and transcribes. Each transcript is printed. `--paste` copies it to the clipboard and presses Ctrl+V on a virtual uinput keyboard; use `--paste-keys ctrl-shift-v` for terminals. `--exec CMD` runs a shell command with the text on stdin.
+
+Choose a speech model with `--backend`:
+
+- `local` (default, cargo feature `local`): ONNX models run in-process via [transcribe-rs](https://github.com/cjpais/transcribe-rs), the engine behind Handy. Supported: Parakeet, Canary, Cohere, SenseVoice, GigaAM. `--model-dir auto` reuses models that Handy or Spokenly already downloaded, preferring Parakeet v2. You can also give `handy/<folder>` or any model directory.
+- `openai`: any OpenAI-compatible `/v1/audio/transcriptions` server, such as vLLM, whisper.cpp or a cloud API. Set it with `--url`, `--model` and `--api-key`.
+- `command`: any program that takes a 16 kHz WAV path and prints text, such as `examples/backends/fw_transcribe.py` for faster-whisper.
+
+Audio is resampled from about 10 kHz to 16 kHz before transcription.
+
 ## Provenance and tests
 
 This is a clean-room-style port. The protocol, the collection format, the audio codec and the user-record format were recovered by reverse-engineering the vendor's Android library and the ring firmware. Functions in `src/haversine/` cite the library function or address they replicate.

@@ -132,6 +132,49 @@ pub async fn find(adapter: &Adapter, address: BDAddr, timeout: Duration) -> Resu
     found.ok_or(ClientError::NotFound(address))
 }
 
+/// Wait for an advertisement from `address` that satisfies `pred`, without connecting.
+/// Scans continuously (BlueZ reports manufacturer-data changes as they arrive).
+pub async fn wait_for_advert(
+    adapter: &Adapter,
+    address: BDAddr,
+    mut pred: impl FnMut(&AdvertisementData) -> bool,
+) -> Result<AdvertisementData> {
+    use btleplug::api::CentralEvent;
+    let mut events = adapter.events().await?;
+    adapter
+        .start_scan(ScanFilter {
+            services: vec![p::HAVERSINE_SERVICE_128],
+        })
+        .await?;
+    let found = loop {
+        let Some(ev) = events.next().await else {
+            break None;
+        };
+        // Only live advertisement payloads: DeviceUpdated/properties() can replay BlueZ's
+        // cached manufacturer data from before an erase.
+        let CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } = ev else {
+            continue;
+        };
+        let Ok(per) = adapter.peripheral(&id).await else {
+            continue;
+        };
+        if per.address() != address {
+            continue;
+        }
+        let Some(adv) = manufacturer_data
+            .get(&p::HAVERSINE_COMPANY_ID)
+            .and_then(|m| p::parse_advertisement(m).ok())
+        else {
+            continue;
+        };
+        if pred(&adv) {
+            break Some(adv);
+        }
+    };
+    adapter.stop_scan().await?;
+    found.ok_or(ClientError::NotFound(address))
+}
+
 type NotificationStream = Pin<Box<dyn Stream<Item = btleplug::api::ValueNotification> + Send>>;
 
 /// The ctrl/data characteristic pair of a connected ring.
