@@ -29,7 +29,9 @@ pub fn parse_keys(s: &str) -> Result<Vec<u16>, String> {
             "shift" => Ok(KEY_LEFTSHIFT),
             "v" => Ok(KEY_V),
             "insert" | "ins" => Ok(KEY_INSERT),
-            other => Err(format!("unsupported key {other:?} (use ctrl, shift, v, insert)")),
+            other => Err(format!(
+                "unsupported key {other:?} (use ctrl, shift, v, insert)"
+            )),
         })
         .collect()
 }
@@ -127,7 +129,9 @@ pub async fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     }
     let st = child.wait().await?;
     if !st.success() {
-        return Err(std::io::Error::other(format!("clipboard tool exited with {st}")));
+        return Err(std::io::Error::other(format!(
+            "clipboard tool exited with {st}"
+        )));
     }
     Ok(())
 }
@@ -139,7 +143,10 @@ mod tests {
     #[test]
     fn chords() {
         assert_eq!(parse_keys("ctrl-v").unwrap(), vec![KEY_LEFTCTRL, KEY_V]);
-        assert_eq!(parse_keys("ctrl+shift+v").unwrap(), vec![KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V]);
+        assert_eq!(
+            parse_keys("ctrl+shift+v").unwrap(),
+            vec![KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V]
+        );
         assert!(parse_keys("alt-v").is_err());
     }
 }

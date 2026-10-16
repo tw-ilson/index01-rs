@@ -152,7 +152,11 @@ pub async fn wait_for_advert(
         };
         // Only live advertisement payloads: DeviceUpdated/properties() can replay BlueZ's
         // cached manufacturer data from before an erase.
-        let CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } = ev else {
+        let CentralEvent::ManufacturerDataAdvertisement {
+            id,
+            manufacturer_data,
+        } = ev
+        else {
             continue;
         };
         let Ok(per) = adapter.peripheral(&id).await else {
@@ -344,7 +348,8 @@ impl Index01Client {
     /// The ring resets its clock when it wakes from its dark state; recordings are
     /// timestamped from this clock.
     pub async fn set_time(&mut self, unix_time: u32) -> Result<()> {
-        self.program(p::UNIX_TIME_ADDR, &unix_time.to_le_bytes()).await
+        self.program(p::UNIX_TIME_ADDR, &unix_time.to_le_bytes())
+            .await
     }
 
     /// Program the user record (ProgramApplicationDataOperation: length-prefixed
@@ -355,7 +360,11 @@ impl Index01Client {
         prefixed.extend_from_slice(&blob);
         self.program(p::APPLICATION_DATA_STORE, &prefixed).await?;
         let back = self
-            .read(p::APPLICATION_DATA_STORE, prefixed.len() as u32, DEFAULT_TIMEOUT)
+            .read(
+                p::APPLICATION_DATA_STORE,
+                prefixed.len() as u32,
+                DEFAULT_TIMEOUT,
+            )
             .await?;
         if back != prefixed {
             return Err(ClientError::VerifyFailed);

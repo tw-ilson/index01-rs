@@ -40,8 +40,14 @@ enum BackendKind {
 /// Speech-to-text backend. Any model works: point it at a server or a script.
 #[derive(Args, Clone)]
 struct BackendArgs {
-    #[cfg_attr(feature = "local", arg(long, value_enum, default_value = "local", env = "INDEX01_BACKEND"))]
-    #[cfg_attr(not(feature = "local"), arg(long, value_enum, default_value = "openai", env = "INDEX01_BACKEND"))]
+    #[cfg_attr(
+        feature = "local",
+        arg(long, value_enum, default_value = "local", env = "INDEX01_BACKEND")
+    )]
+    #[cfg_attr(
+        not(feature = "local"),
+        arg(long, value_enum, default_value = "openai", env = "INDEX01_BACKEND")
+    )]
     backend: BackendKind,
     /// For --backend local: a model directory, or reuse other apps' downloads: "auto" (Handy,
     /// then Spokenly; prefers Parakeet v2), "handy", "spokenly", or "handy/<model-folder>".
@@ -51,7 +57,11 @@ struct BackendArgs {
     #[arg(long, default_value = "http://localhost:8000/v1", env = "INDEX01_URL")]
     url: String,
     /// Model name sent to the server.
-    #[arg(long, default_value = "openai/whisper-large-v3-turbo", env = "INDEX01_MODEL")]
+    #[arg(
+        long,
+        default_value = "openai/whisper-large-v3-turbo",
+        env = "INDEX01_MODEL"
+    )]
     model: String,
     /// Bearer token for the server, if it needs one.
     #[arg(long, env = "INDEX01_API_KEY", hide_env_values = true)]
@@ -72,7 +82,10 @@ impl BackendArgs {
         Ok(match self.backend {
             #[cfg(feature = "local")]
             BackendKind::Local => {
-                let m = index01::transcribe::local::LocalModel::load(&self.model_dir, self.language.clone())?;
+                let m = index01::transcribe::local::LocalModel::load(
+                    &self.model_dir,
+                    self.language.clone(),
+                )?;
                 eprintln!("model: {:?} from {}", m.engine, m.dir.display());
                 Backend::Local(std::sync::Arc::new(std::sync::Mutex::new(m)))
             }
@@ -84,7 +97,9 @@ impl BackendArgs {
                 prompt: self.prompt.clone(),
             },
             BackendKind::Command => Backend::Command(
-                self.command.clone().ok_or("--backend command needs --command")?,
+                self.command
+                    .clone()
+                    .ok_or("--backend command needs --command")?,
             ),
         })
     }
@@ -293,18 +308,45 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}: {text}", wav.display());
             }
         }
-        Cmd::Watch { address, out, exec, paste, paste_keys, keep, stt } => {
+        Cmd::Watch {
+            address,
+            out,
+            exec,
+            paste,
+            paste_keys,
+            keep,
+            stt,
+        } => {
             let paster = if paste {
-                Some(index01::paste::Paster::new(index01::paste::parse_keys(&paste_keys)?).map_err(
-                    |e| format!("--paste: can't open /dev/uinput ({e}); see README for permissions"),
-                )?)
+                Some(
+                    index01::paste::Paster::new(index01::paste::parse_keys(&paste_keys)?).map_err(
+                        |e| {
+                            format!(
+                                "--paste: can't open /dev/uinput ({e}); see README for permissions"
+                            )
+                        },
+                    )?,
+                )
             } else {
                 None
             };
-            watch(&address, &out, exec.as_deref(), paster.as_ref(), keep, &stt.backend()?, scan_timeout)
-                .await?;
+            watch(
+                &address,
+                &out,
+                exec.as_deref(),
+                paster.as_ref(),
+                keep,
+                &stt.backend()?,
+                scan_timeout,
+            )
+            .await?;
         }
-        Cmd::Setup { address, user_id, yes, force } => {
+        Cmd::Setup {
+            address,
+            user_id,
+            yes,
+            force,
+        } => {
             if !yes {
                 return Err("refusing to write the user record without --yes".into());
             }
@@ -312,7 +354,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let res = async {
                 let cur = c.read_app_data(0x10).await?;
                 if cur.iter().any(|&b| b != 0xff) && !force {
-                    println!("user record already programmed ({}); use --force to overwrite", hex(&cur));
+                    println!(
+                        "user record already programmed ({}); use --force to overwrite",
+                        hex(&cur)
+                    );
                     return Ok(());
                 }
                 let now = now_s();
@@ -338,7 +383,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Erase { address, yes, out } => {
             if !yes {
-                return Err("refusing to erase without --yes (pull first; this cannot be undone)".into());
+                return Err(
+                    "refusing to erase without --yes (pull first; this cannot be undone)".into(),
+                );
             }
             let mut c = Index01Client::connect_address(&address, scan_timeout).await?;
             let res = async {
@@ -389,7 +436,11 @@ async fn pull(
         };
         let path = out.join(format!("collection_{i}.bin"));
         std::fs::write(&path, &blob)?;
-        println!("collection {i}: saved {} ({} bytes)", path.display(), blob.len());
+        println!(
+            "collection {i}: saved {} ({} bytes)",
+            path.display(),
+            blob.len()
+        );
         pieces.push((i, blob));
     }
     write_recordings(&pieces, out)
@@ -427,7 +478,11 @@ fn write_recordings(
             println!("collection {i}: no audio");
             continue;
         }
-        let rate = if a.sample_rate_hz == 0 { 16000 } else { a.sample_rate_hz };
+        let rate = if a.sample_rate_hz == 0 {
+            16000
+        } else {
+            a.sample_rate_hz
+        };
         // Continue the open recording only if this piece is a non-first part of a multipart set.
         let continues = open && a.is_multipart && a.collection_start_index != *i as u32;
         if !continues {
@@ -461,7 +516,11 @@ fn write_recordings(
             r.rate,
             r.unix_time,
             r.buttons.join(" "),
-            if r.complete { "" } else { ", INCOMPLETE: final part missing" }
+            if r.complete {
+                ""
+            } else {
+                ", INCOMPLETE: final part missing"
+            }
         );
         paths.push(wav);
     }
@@ -570,7 +629,10 @@ async fn watch(
             let text = match backend.transcribe_wav(&wav).await {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("transcription failed for {}: {e} (audio kept)", wav.display());
+                    eprintln!(
+                        "transcription failed for {}: {e} (audio kept)",
+                        wav.display()
+                    );
                     continue;
                 }
             };
@@ -625,8 +687,9 @@ async fn resumed_from_suspend() {
 }
 
 /// Power the adapter off and on through BlueZ. Returns its name (e.g. "hci0").
-async fn power_cycle(adapter: &btleplug::platform::Adapter) -> Result<String, Box<dyn std::error::Error>> {
-
+async fn power_cycle(
+    adapter: &btleplug::platform::Adapter,
+) -> Result<String, Box<dyn std::error::Error>> {
     let info = adapter.adapter_info().await?;
     let name = info.split_whitespace().next().unwrap_or("hci0").to_owned();
     if !name.starts_with("hci") {
@@ -635,7 +698,15 @@ async fn power_cycle(adapter: &btleplug::platform::Adapter) -> Result<String, Bo
     let path = format!("/org/bluez/{name}");
     for on in ["false", "true"] {
         let st = tokio::process::Command::new("busctl")
-            .args(["set-property", "org.bluez", &path, "org.bluez.Adapter1", "Powered", "b", on])
+            .args([
+                "set-property",
+                "org.bluez",
+                &path,
+                "org.bluez.Adapter1",
+                "Powered",
+                "b",
+                on,
+            ])
             .status()
             .await?;
         if !st.success() {

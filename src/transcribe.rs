@@ -54,7 +54,13 @@ impl Backend {
     /// Transcribe a 16 kHz mono 16-bit WAV file.
     pub async fn transcribe_file(&self, wav16k: &Path) -> Result<String, TranscribeError> {
         match self {
-            Backend::OpenAi { url, model, api_key, language, prompt } => {
+            Backend::OpenAi {
+                url,
+                model,
+                api_key,
+                language,
+                prompt,
+            } => {
                 let bytes = tokio::fs::read(wav16k).await?;
                 let part = reqwest::multipart::Part::bytes(bytes)
                     .file_name("audio.wav")
@@ -78,7 +84,10 @@ impl Backend {
                 let status = resp.status();
                 let body = resp.text().await?;
                 if !status.is_success() {
-                    return Err(TranscribeError::Server { status: status.as_u16(), body });
+                    return Err(TranscribeError::Server {
+                        status: status.as_u16(),
+                        body,
+                    });
                 }
                 // {"text": "..."}; fall back to the raw body for servers that ignore response_format.
                 Ok(serde_json::from_str::<serde_json::Value>(&body)
@@ -97,7 +106,11 @@ impl Backend {
                     .map_err(|e| TranscribeError::Local(e.to_string()))?
             }
             Backend::Command(cmd) => {
-                let script = if cmd.contains("$1") { cmd.clone() } else { format!("{cmd} \"$1\"") };
+                let script = if cmd.contains("$1") {
+                    cmd.clone()
+                } else {
+                    format!("{cmd} \"$1\"")
+                };
                 let out = tokio::process::Command::new("sh")
                     .arg("-c")
                     .arg(script)
@@ -186,7 +199,10 @@ pub mod local {
     /// then the first model found.
     fn pick(dirs: &[PathBuf]) -> Option<PathBuf> {
         let named = |s: &str| dirs.iter().find(|p| p.to_string_lossy().contains(s));
-        named("parakeet-tdt-0.6b-v2").or_else(|| named("parakeet")).or(dirs.first()).cloned()
+        named("parakeet-tdt-0.6b-v2")
+            .or_else(|| named("parakeet"))
+            .or(dirs.first())
+            .cloned()
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +221,11 @@ pub mod local {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| !n.starts_with("._")) // macOS resource forks shipped in some archives
             .collect();
-        let has = |pre: &str| names.iter().any(|n| n.starts_with(pre) && n.contains(".onnx"));
+        let has = |pre: &str| {
+            names
+                .iter()
+                .any(|n| n.starts_with(pre) && n.contains(".onnx"))
+        };
         let engine = if has("decoder_joint-model") {
             Engine::Parakeet
         } else if has("decoder-model") && has("encoder-model") {
@@ -244,7 +264,10 @@ pub mod local {
 
     impl std::fmt::Debug for LocalModel {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("LocalModel").field("engine", &self.engine).field("dir", &self.dir).finish()
+            f.debug_struct("LocalModel")
+                .field("engine", &self.engine)
+                .field("dir", &self.dir)
+                .finish()
         }
     }
 
@@ -265,7 +288,10 @@ pub mod local {
             };
             Ok(Self {
                 model,
-                options: TranscribeOptions { language, ..Default::default() },
+                options: TranscribeOptions {
+                    language,
+                    ..Default::default()
+                },
                 engine,
                 dir,
             })
@@ -306,8 +332,16 @@ pub fn read_wav_mono16(b: &[u8]) -> Result<(u32, Vec<i16>), TranscribeError> {
         }
         i += 8 + len + (len & 1);
     }
-    let (rate, data) = (rate.ok_or_else(|| bad("no fmt"))?, data.ok_or_else(|| bad("no data"))?);
-    Ok((rate, data.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()))
+    let (rate, data) = (
+        rate.ok_or_else(|| bad("no fmt"))?,
+        data.ok_or_else(|| bad("no data"))?,
+    );
+    Ok((
+        rate,
+        data.chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect(),
+    ))
 }
 
 /// Windowed-sinc (Lanczos, a = 8) resampler. Low-passes at the lower Nyquist when downsampling.
@@ -319,7 +353,13 @@ pub fn resample(x: &[i16], from: u32, to: u32) -> Vec<i16> {
     let ratio = to as f64 / from as f64;
     let cutoff = ratio.min(1.0); // relative to the input rate
     let n_out = ((x.len() as f64) * ratio).round() as usize;
-    let sinc = |t: f64| if t == 0.0 { 1.0 } else { (std::f64::consts::PI * t).sin() / (std::f64::consts::PI * t) };
+    let sinc = |t: f64| {
+        if t == 0.0 {
+            1.0
+        } else {
+            (std::f64::consts::PI * t).sin() / (std::f64::consts::PI * t)
+        }
+    };
     let half = (A / cutoff).ceil() as isize;
     (0..n_out)
         .map(|j| {
@@ -352,13 +392,17 @@ mod tests {
     fn resample_preserves_tone_and_length() {
         let from = 9997;
         let x: Vec<i16> = (0..from)
-            .map(|i| ((i as f64 * 2.0 * std::f64::consts::PI * 440.0 / from as f64).sin() * 10000.0) as i16)
+            .map(|i| {
+                ((i as f64 * 2.0 * std::f64::consts::PI * 440.0 / from as f64).sin() * 10000.0)
+                    as i16
+            })
             .collect();
         let y = resample(&x, from, TARGET_RATE);
         assert_eq!(y.len(), TARGET_RATE as usize);
         // Compare against the ideal 16 kHz tone away from the edges.
         for (j, &v) in y.iter().enumerate().skip(100).take(15000) {
-            let ideal = (j as f64 * 2.0 * std::f64::consts::PI * 440.0 / TARGET_RATE as f64).sin() * 10000.0;
+            let ideal = (j as f64 * 2.0 * std::f64::consts::PI * 440.0 / TARGET_RATE as f64).sin()
+                * 10000.0;
             assert!((v as f64 - ideal).abs() < 60.0, "j={j} v={v} ideal={ideal}");
         }
     }
